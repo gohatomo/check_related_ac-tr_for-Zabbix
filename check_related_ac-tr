@@ -1,0 +1,1177 @@
+#!/usr/bin/php
+<?php
+//Version
+$version = 'rev1.0';
+
+//Require
+require_once 'check_related_ac-tr.conf';
+
+//Setting timezone
+date_default_timezone_set("$timezone");
+
+//API login
+$ch = curl_setup($api_url);
+$auth = api_login($api_user, $api_pass);
+
+//File definition
+$hiduke = date("Ymd");
+$zikan = date("His");
+$hostname = gethostname();
+
+//Temporary directory specification
+$tmpdir = "{$tmp_dir}/{$hiduke}_{$zikan}";
+$tmpfile = "{$tmpdir}/tmpfile.php";
+
+//Output file specification
+if (!file_exists($export_dir)){
+	mkdir($export_dir, 0755);
+}
+$CSVFILE = "{$export_dir}/{$hostname}_actiontrigger_{$hiduke}_{$zikan}.csv";
+$f = fopen("$CSVFILE", "w");
+
+//Insert header in output file
+$header = array(
+	'hostid',
+	'hostname',
+	'displayname',
+	'triggerid',
+	'triggername',
+	'actionname'
+);
+//Character code conversion
+if ($encoding !== 'UTF-8'){
+	mb_convert_variables("$encoding", "UTF-8", $header);
+}
+fputcsv($f, $header);
+
+//Array declaration
+$triggerdata = array();
+$templatedata = array();
+$actiondata = actiondata_get();
+$count_action = count($actiondata);
+$hostgroupdata = hostgroup_get();
+$match_expression = array();
+
+//Read list file
+$list_file = "hostid_list.csv";
+if (file_exists("{$list_file}")) {
+	$data = rtrim(file_get_contents($list_file));
+	if (empty($data)){
+		echo "\n" . "[ERROR] \"{$list_file}\" is empty."
+			. " Please check list file." . "\n";
+		exit(1);
+	}
+	$hostlist = multiexplode(array("\n", "\r\n"), $data);
+}
+else {
+	echo "\n" . "[ERROR] \"{$list_file}\" is not exists."
+		. " Please check list file." . "\n";
+	exit(1);
+}
+
+//Get host data
+$method = 'host.get';
+$params = array(
+	'hostids' => $hostlist,
+	'output' => array(
+		'host',
+		'name',
+		'hostid',
+	),
+	'selectTriggers' => array(
+		'triggerid',
+		'templateid',
+		'description'
+	),
+	'selectGroups' => array(
+		'groupid'
+	),
+);
+$response = api_request($method, $params, $auth);
+
+//Display adjustment
+echo "\n";
+
+//Check action and export list
+$count = count($response);
+for ($i = 0; $i < $count; ++$i){
+	//Processing status display
+	echo "\rWorking...<host>" . ($i+1) . "/" . $count
+		. " <trigger>" . "*" . "/" . "*"
+		.  " (now/max)                ";
+
+	$hostgroups = array();
+	$host = $response[$i]['host'];
+	$host_name = $response[$i]['name'];
+	$hostid = $response[$i]['hostid'];
+
+	//Store host group data in an array
+	$count2 = count($response[$i]['groups']);
+	for ($j = 0; $j < $count2; ++$j){
+		$hostgroups[] = $response[$i]['groups'][$j]['groupid'];
+	}
+	//Store trigger data in an array
+	$count2 = count($response[$i]['triggers']);
+	for ($j = 0; $j < $count2; ++$j){
+		//Processing status display
+		echo "\rWorking...<host>" . ($i+1) . "/" . $count
+			. " <trigger>" . ($j+1) . "/" . "$count2"
+			.  " (now/max)";
+
+		$triggerid = $response[$i]['triggers'][$j]['triggerid'];
+		$description = $response[$i]['triggers'][$j]['description'];
+		triggerdata_get($triggerid);
+
+		$action_list = action_check($hostid, $hostgroups, $triggerid);
+
+		$count3 = count($action_list);
+		$action_name = "";
+		for ($k = 0; $k < $count3; ++$k){
+			$action_name = $action_list[$k];
+			$export_array = array(
+				$hostid,
+				$host,
+				$host_name,
+				$triggerid,
+				$description,
+				$action_name,
+			); 
+			$export_array = str_replace('"', '""', $export_array);
+			//Character code conversion
+			if ($encoding !== 'UTF-8'){
+				mb_convert_variables("$encoding", "UTF-8", $export_array);
+			}
+			fputcsv($f, $export_array, ',', '"', '"');
+		}
+	}
+}
+
+//Processing status display
+echo "\n" . "\n";
+
+//Close file
+fclose($f);
+
+//API logout
+api_logout($auth);
+curl_close($ch);
+
+//Delete temporary directory
+if (file_exists($tmpdir)){
+	rm_dir($tmpdir);
+}
+
+//Define zip file name
+$z_file = "{$export_dir}/{$hostname}_actiontrigger_{$hiduke}_{$zikan}.zip";
+
+//Open zip file
+$zip = new ZipArchive();
+$zip->open("{$z_file}", ZipArchive::CREATE);
+
+//Add file
+$zip->addFile($CSVFILE, mb_substr(mb_strrchr("/$CSVFILE", '/', false, "$encoding"), 1, NULL, "$encoding"));
+
+//Close zip file
+$zip->close();
+
+//Show full path of ZIP file on standard output
+echo "[Export File Path]" . "\n";
+echo realpath($z_file) . "\n";
+
+//Delete csv file
+unlink($CSVFILE);
+
+
+////////////////////////////////////////////////////////////////////////////////
+//      Get Check Data Function
+////////////////////////////////////////////////////////////////////////////////
+function actiondata_get(){
+	global $auth;
+	global $tmpdir;
+	global $tmpfile;
+
+	//Get action data
+	$method = 'action.get';
+	$params = array(
+		'output' => array(
+			'actionid',
+			'name'
+		),
+		'selectFilter' => 'extend',
+		'filter' => array(
+			'eventsource' => '0'
+		),
+	);
+	$response = api_request($method, $params, $auth);
+
+	//Check custom expression
+	$count = count($response);
+	for ($i = 0; $i < $count; ++$i){
+		//If a custom conditional expression exists, temporary directory and file create
+		if ($response[$i]['filter']['evaltype'] === '3'){
+			mkdir($tmpdir, 0755, TRUE);
+			touch($tmpfile);
+			break;
+		}
+	}
+
+	return $response;
+}
+
+//Get Hostgroup data
+function hostgroup_get(){
+	global $auth;
+	
+	//Get hostgroup data
+	$method = 'hostgroup.get';
+	$params = array(
+		'output' => array(
+			'groupid',
+			'name'
+		),
+	);
+	$response = api_request($method, $params, $auth);
+	
+	//Temporary data creation for subgroup search
+	$count = count($response);
+	for ($i = 0; $i < $count; ++$i){
+		$groupid = $response[$i]['groupid'];
+		$name = $response[$i]['name'];
+		$tmpdata[$name] = $groupid;
+	}
+	//Subgroup search and host data creation
+	for ($i = 0; $i < $count; ++$i){
+		$groupid = $response[$i]['groupid'];
+		$name = $response[$i]['name'];
+		$hostgroupdata[$groupid]['name'] = $name;
+
+		foreach($tmpdata as $key => $value){
+			if (preg_match("|^$name/|", $key)){
+				$hostgroupdata[$groupid]['subgroupid'][] = $value;
+			}
+		}
+	}
+	return $hostgroupdata;
+}
+
+//Get trigger data
+function triggerdata_get($triggerid){
+	global $auth;
+	global $triggerdata;
+
+	//Get triggerdata
+	$method = 'trigger.get';
+	$params = array(
+		'triggerids' => $triggerid,
+		'output' => array(
+			'description',
+			'templateid',
+			'priority'
+		),
+		'selectTags' => 'extend',
+		'selectHosts' => array(
+			'hostid'
+		),
+		'expandDescription' => true,
+	);
+	$response = api_request($method, $params, $auth);
+
+	//Store basic data in an array
+	$triggerdata[$triggerid]['description'] = $response[0]['description'];
+	$triggerdata[$triggerid]['templateid'] = $response[0]['templateid'];
+	$triggerdata[$triggerid]['priority'] = $response[0]['priority'];
+
+	//Store trigger tag data in an array
+	$count = count($response[0]['tags']);
+	for ($i = 0; $i < $count; ++$i){
+		$tag = $response[0]['tags'][$i]['tag'];
+		$tag_value = $response[0]['tags'][$i]['value'];
+		$triggerdata[$triggerid]['tags'][$tag][] = $tag_value;
+	}
+	//Store host tag data in an array
+	$count_h = count($response[0]['hosts']);
+	for ($i = 0; $i < $count_h; ++$i){
+		$hostid = $response[0]['hosts'][$i]['hostid'];
+		$triggerdata[$triggerid]['hostid'][] = $hostid;
+		
+		//Get host data
+		$method = 'host.get';
+		$params = array(
+			'hostids' => $hostid,
+			'output' => array(
+				'hostid',
+			),
+			'selectTags' => 'extend',
+		);
+		$response2 = api_request($method, $params, $auth);
+		
+		$count_h2 = count($response2[0]['tags']);
+		for ($j = 0; $j < $count_h2; ++$j){
+			$h_tag = $response2[0]['tags'][$j]['tag'];
+			$h_tag_value = $response2[0]['tags'][$j]['value'];
+			
+			$triggerdata[$triggerid]['tags'][$h_tag][] = $h_tag_value;
+		}
+	}
+	//Store link template tag data in an array
+	$templateid = $response[0]['templateid'];
+	if ($templateid !== '0'){
+		link_templatedata_get($triggerid, $templateid);	
+	}
+}
+
+//Get link template data
+function link_templatedata_get($triggerid, $templateid){
+	global $auth;
+	global $triggerdata;
+	global $templatedata;
+
+	if (!isset($templatedata[$templateid])){
+		//Get trigger data
+		$method = 'trigger.get';
+		$params = array(
+			'triggerids' => $templateid,
+			'output' => array(
+				'templateid',
+			),
+			'selectTags' => 'extend',
+			'selectHosts' => array(
+				'hostid'
+			),
+		);
+		$response = api_request($method, $params, $auth);
+		
+		//Store template data in an array
+		$hostid = $response[0]['hosts'][0]['hostid'];
+		$templateid2 = $response[0]['templateid'];
+	
+		$templatedata[$templateid]['hostid'] = $hostid;
+		$templatedata[$templateid]['templateid'] = $templateid2;
+	
+		//Get template data
+		$method = 'template.get';
+		$params = array(
+			'templateids' => $hostid,
+			'output' => array(
+				'templateid',
+			),
+			'selectTags' => 'extend',
+		);
+		$response2 = api_request($method, $params, $auth);
+	
+		$count2 = count($response2[0]['tags']);
+		for ($i = 0; $i < $count2; ++$i){
+			$tag = $response2[0]['tags'][$i]['tag'];
+			$tag_value = $response2[0]['tags'][$i]['value'];
+			
+			//Store template data in an array
+			$templatedata[$templateid]['tags'][$i]['tag'] = $tag;
+			$templatedata[$templateid]['tags'][$i]['value'] = $tag_value;
+			
+			//Store trigger data in an array
+			$triggerdata[$triggerid]['tags'][$tag][] = $tag_value;
+		}
+		
+		//Search template data if link template exists
+		if ($templateid2 !== '0'){
+			link_templatedata_get($triggerid,$templateid2);
+		}
+	}
+	else {
+		$templateid2 = $templatedata[$templateid]['templateid'];
+		if (isset($templatedata[$templateid]['tags'])){
+			$count = count($templatedata[$templateid]['tags']);
+			for ($i = 0; $i < $count; ++$i){
+				$tag = $templatedata[$templateid]['tags'][$i]['tag'];
+				$tag_value = $templatedata[$templateid]['tags'][$i]['value'];
+				
+				//Store trigger data in an array
+				$triggerdata[$triggerid]['tags'][$tag][] = $tag_value;
+			}
+		}
+		//Search template data if link template exists
+		if ($templateid2 !== '0'){
+			link_templatedata_get($triggerid,$templateid2);
+		}
+	}
+}
+
+//Get link template trigger data
+function link_templatetrigger_check($templateid, $value){
+	global $templatedata;
+	global $templatetrigger_check;
+
+	//Returns true (1) if equal to template trigger ID
+	if ($templateid === $value){
+		$templatetrigger_check = '1';
+	}
+	else {
+		//Returns false (0) if it is not equal to the template trigger ID and the template trigger ID does not exist
+		if ($templatedata[$templateid]['templateid'] === '0'){
+			$templatetrigger_check = '0';
+		}
+		//If it is not equal to the template trigger ID and the template trigger ID exists, check again
+		else {
+			link_templatetrigger_check($templatedata[$templateid]['templateid'], $value);
+		}
+	}
+}
+
+//Check link template
+function link_template_check($templateid, $value){
+	global $templatedata;
+	global $template_check;
+
+	//Returns true (1) if equal to template ID
+	if ($templatedata[$templateid]['hostid'] === $value){
+		$template_check = '1';
+	}
+	else {
+		//Returns false (0) if it is not equal to the template ID and the template trigger ID does not exist
+		if ($templatedata[$templateid]['templateid'] === '0'){
+			if ($templatedata[$templateid]['hostid'] === $value){
+				$template_check = '1';
+			}
+			else {
+				$template_check = '0';
+			}
+		}
+		//If it is not equal to the template ID and the template trigger ID exists, check again
+		else {
+			link_template_check($templatedata[$templateid]['templateid'], $value);
+		}
+	}
+}
+
+////////////////////////////////////////////////////////////////////////////////
+//	Action Check Function
+////////////////////////////////////////////////////////////////////////////////
+//Check action condtions match
+function action_check($hostid, $hostgroups, $triggerid){
+
+	global $auth;
+	global $actiondata;
+	global $count_action;
+	global $triggerdata;
+	global $templatedata;
+	global $hostgroupdata;
+	global $templatetrigger_check;
+	global $template_check;
+	global $tmpfile;
+	global $match_expression;
+
+	$action_name = array();
+	
+	//Check for the number of actions
+	for ($i = 0; $i < $count_action; ++$i){
+		//Initialize the array
+		$check_result = array();
+		$final_result = array();
+		
+		//Store basic data
+		$name = $actiondata[$i]['name'];
+		$evaltype = $actiondata[$i]['filter']['evaltype'];
+		$formula = $actiondata[$i]['filter']['formula'];
+		$eval_formula = $actiondata[$i]['filter']['eval_formula'];
+		$conditions = $actiondata[$i]['filter']['conditions'];	
+
+		//If condtions is not specified, it is judged as a match for all triggers and the action name is stored
+		if (empty($conditions)){
+			$action_name[] = $name;
+			continue;
+		}
+		$count_conditions = count($conditions);
+
+		//Check for the number of label of the condition
+		for ($j = 0; $j < $count_conditions; ++$j){
+			$formulaid = $conditions[$j]['formulaid'];
+			$conditiontype = $conditions[$j]['conditiontype'];
+			$operator = $conditions[$j]['operator'];
+			$value = $conditions[$j]['value'];
+			$value2 = $conditions[$j]['value2'];
+			$check_result['conditiontype'][$conditiontype][] = $formulaid;
+			
+			//Hostgroup
+			if ($conditiontype === '0'){
+				//Processing when equals
+				if ($operator === '0'){
+					$count_0 = count($hostgroups);
+					for ($k = 0; $k < $count_0; ++$k){
+						$check_groupid = $hostgroups[$k];
+						//Check if host groups are equal
+						if ($value === $check_groupid){
+							//If they are equal, set the flag to true (1) and end the label check.
+							$check_result['flag'][$formulaid] = 1;
+							continue 2;
+						}
+						else {
+							//If subgroups exist, check if the subgroups are equal
+							if (isset($hostgroupdata[$value]['subgroupid'])){
+								$count_subgroupid = count($hostgroupdata[$value]['subgroupid']);
+								for ($l = 0; $l < $count_subgroupid; ++$l){
+									//If they are equal, set the flag to true (1) and end the label check.
+									if ($hostgroupdata[$value]['subgroupid'][$l] === $check_groupid){
+										$check_result['flag'][$formulaid] = 1;
+										continue 3;
+									}
+								}
+							}
+							//Set flag to false (0) if not equal, including subgroups
+							$check_result['flag'][$formulaid] = 0;
+						}
+					}
+				}
+				//Processing when not equals
+				if ($operator === '1'){
+					$count_0 = count($hostgroups);
+					for ($k = 0; $k < $count_0; ++$k){
+						$check_groupid = $hostgroups[$k];
+						//Check if host groups are not equal
+						if ($value !== $check_groupid){
+							//If subgroups exist, check if the subgroups are not equal
+							if (isset($hostgroupdata[$value]['subgroupid'])){
+								$count_subgroupid = count($hostgroupdata[$value]['subgroupid']);
+								for ($l = 0; $l < $count_subgroupid; ++$l){
+									//If they are equal, set the flag to false (0) and end the label check.
+									if ($hostgroupdata[$value]['subgroupid'][$l] === $check_groupid){
+										$check_result['flag'][$formulaid] = 0;
+										continue 3;
+									}
+								}
+							}
+							//If the subgroups are not equal, set the flag to true (1) and end the label check.
+							$check_result['flag'][$formulaid] = 1;
+							continue 2;
+						}
+						else {
+							//Set flag to false (0) if host groups are equal
+							$check_result['flag'][$formulaid] = 0;
+						}
+					}
+				}
+			}
+			//Host
+			if ($conditiontype === '1'){
+				//Processing when equals
+				if ($operator === '0'){
+					//If the hosts are equal, set the flag to true (1) and end the label check
+					if ($value === $hostid){
+						$check_result['flag'][$formulaid] = 1;
+						continue;
+					}
+					//If the hosts are not equal, set the flag to false (0) and end the label check
+					else {
+						$check_result['flag'][$formulaid] = 0;
+						continue;
+					}
+				}
+				//Processing when not equals
+				if ($operator === '1'){
+					//If the hosts are not equal, set the flag to true (1) and end the label check
+					if ($value !== $hostid){
+						$check_result['flag'][$formulaid] = 1;
+						continue;
+					}
+					//If the hosts are equal, set the flag to false (0) and end the label check
+					else {
+						$check_result['flag'][$formulaid] = 0;
+						continue;
+					}
+				}
+			}
+			//Trigger
+			if ($conditiontype === '2'){
+				$templatetrigger_check = "";
+				//Processing when equals
+				if ($operator === '0'){
+					//If the triggers are equal, set the flag to true (1) and end the label check
+					if ($value === $triggerid){
+						$check_result['flag'][$formulaid] = 1;
+						continue;
+					}
+					else {
+						//If the triggers are not equal and the template trigger ID exists, check the template ID
+						if ($triggerdata[$triggerid]['templateid'] !== '0'){
+							link_templatetrigger_check($triggerdata[$triggerid]['templateid'], $value);
+							//If the template triggers are equal, set the flag to true (1) and end the label check
+							if ($templatetrigger_check === '1'){
+								$check_result['flag'][$formulaid] = 1;
+								continue;
+							}
+							//If the template triggers are not equal, set the flag to false (0) and end the label check
+							else {
+								$check_result['flag'][$formulaid] = 0;
+								continue;
+							}
+						}
+						//If the triggers are not equal and the template trigger ID does not exist, set the flag to false (0) and end the label check
+						else {
+							$check_result['flag'][$formulaid] = 0;
+							continue;
+						}
+					}
+				}
+				//Processing when not equals
+				if ($operator === '1'){
+					//If the triggers are equal, set the flag to false (0) and end the label check
+					if ($value === $triggerid){
+						$check_result['flag'][$formulaid] = 0;
+						continue;
+					}
+					else {
+						//If the triggers are not equal and the template trigger ID exists, check the template ID
+						if ($triggerdata[$triggerid]['templateid'] !== '0'){
+							link_templatetrigger_check($triggerdata[$triggerid]['templateid'], $value);
+							//If the template triggers are equal, set the flag to false (0) and end the label check
+							if ($templatetrigger_check === '1'){
+								$check_result['flag'][$formulaid] = 0;
+								continue;
+							}
+							//If the template triggers are not equal, set the flag to true (1) and end the label check
+							else {
+								$check_result['flag'][$formulaid] = 1;
+								continue;
+							}
+						}
+						//If the triggers are not equal and the template trigger ID does not exist, set the flag to true (1) and end the label check
+						else {
+							$check_result['flag'][$formulaid] = 1;
+							continue;
+						}
+					}
+				}
+			}
+			//Trigger name
+			if ($conditiontype === '3'){
+				//Processing when contains
+				if ($operator === '2'){
+					//If the value is included in the trigger name, set the flag to true (1) and end the label check
+					if (strpos($triggerdata[$triggerid]['description'], $value) !== false){
+						$check_result['flag'][$formulaid] = 1;
+						continue;
+					}
+					//If it is not included in the trigger name, set the flag to false (0) and end the label check
+					else {
+						$check_result['flag'][$formulaid] = 0;
+						continue;
+					}
+				}
+				//Processing when not contain
+				if ($operator === '3'){
+					//If the value is included in the trigger name, set the flag to false (0) and end the label check
+					if (strpos($triggerdata[$triggerid]['description'], $value) !== false){
+						$check_result['flag'][$formulaid] = 0;
+						continue;
+					}
+					//If the value is not included in the trigger name, set the flag to true (1) and end the label check
+					else {
+						$check_result['flag'][$formulaid] = 1;
+						continue;
+					}
+				}
+			}
+			//Trigger severity
+			if ($conditiontype === '4'){
+				//Processing when equals
+				if ($operator === '0'){
+					//If the severity is equal, set the flag to true (1) and end the label check
+					if ($triggerdata[$triggerid]['priority'] === $value){
+						$check_result['flag'][$formulaid] = 1;
+						continue;
+					}
+					//If the severity is not equal, set the flag to false (0) and end the label check
+					else {
+						$check_result['flag'][$formulaid] = 0;
+						continue;
+					}
+				}
+				//Processing when not equals
+				if ($operator === '1'){
+					//If the severity is equal, set the flag to false (0) and end the label check
+					if ($triggerdata[$triggerid]['priority'] === $value){
+						$check_result['flag'][$formulaid] = 0;
+						continue;
+					}
+					//If the severity is not equal, set the flag to true (1) and end the label check
+					else {
+						$check_result['flag'][$formulaid] = 1;
+						continue;
+					}
+				}
+				//Processing when greater than or equals
+				if ($operator === '5'){
+					$int_priority = intval($triggerdata[$triggerid]['priority']);
+					$int_value = intval($value);
+					
+					//If the severity is greater than or equal to the value, set the flag to true (1) and end the label check.
+					if ($int_priority >= $int_value){
+						$check_result['flag'][$formulaid] = 1;
+						continue;
+					}
+					//If the severity is not greater than or equal to the value, set the flag to false (0) and exit the label check.
+					else {
+						$check_result['flag'][$formulaid] = 0;
+						continue;
+					}
+				}
+				//Processing when less than or equals
+				if ($operator === '6'){
+					$int_priority = intval($triggerdata[$triggerid]['priority']);
+					$int_value = intval($value);
+					
+					//If the severity is less than or equal to the value, set the flag to true (1) and end the label check.
+					if ($int_priority <= $int_value){
+						$check_result['flag'][$formulaid] = 1;
+						continue;
+					}
+					//If the severity is not less than or equal to the value, set the flag to false (0) and exit the label check.
+					else {
+						$check_result['flag'][$formulaid] = 0;
+						continue;
+					}
+				}
+			}
+			//Time period
+			if ($conditiontype === '6'){
+				//Set the flag to true (1) and end the label check
+				$check_result['flag'][$formulaid] = 1;
+				continue;
+			}
+			//Template
+			if ($conditiontype === '13'){
+				$template_check = "";
+				//Processing when equals
+				if ($operator === '0'){
+					if ($triggerdata[$triggerid]['templateid'] !== '0'){
+						//Check template
+						link_template_check($triggerdata[$triggerid]['templateid'], $value);
+						
+						//If the templates are equal, set the flag to true (1) and end the label check
+						if ($template_check === '1'){
+							$check_result['flag'][$formulaid] = 1;
+							continue;
+						}
+						//If the templates are not equal, set the flag to false (0) and exit the label check
+						else {
+							$check_result['flag'][$formulaid] = 0;
+							continue;
+						}
+					}
+					//If the trigger is unused template, set the flag to false (0) and end the label check
+					else {
+						$check_result['flag'][$formulaid] = 0;
+						continue;
+					}
+				}
+				//Processing when not equals
+				if ($operator === '1'){
+					if ($triggerdata[$triggerid]['templateid'] !== '0'){
+						//Check template
+						link_template_check($triggerdata[$triggerid]['templateid'], $value);
+						
+						//If the templates are equal, set the flag to false (0) and end the label check
+						if ($template_check === '1'){
+							$check_result['flag'][$formulaid] = 0;
+							continue;
+						}
+						//If the templates are not equal, set the flag to true (1) and end the label check
+						else {
+							$check_result['flag'][$formulaid] = 1;
+							continue;
+						}
+					}
+					//If the trigger is unused template, set the flag to true (1) and end the label check
+					else {
+						$check_result['flag'][$formulaid] = 1;
+						continue;
+					}
+				}
+			}
+			//Problem is suppressed
+			if ($conditiontype === '16'){
+				//Set the flag to true (1) and end the label check
+				$check_result['flag'][$formulaid] = 1;
+				continue;
+			}
+			//Tag name
+			if ($conditiontype === '25'){
+				//Processing when equals
+				if ($operator === '0'){
+					//If the tag names are equal, set the flag to true (1) and end the label check
+					if (isset($triggerdata[$triggerid]['tags'][$value])){
+						$check_result['flag'][$formulaid] = 1;
+						continue;
+					}
+					else {
+						$check_result['flag'][$formulaid] = 0;
+						continue;
+					}
+				}
+				//Processing when not equals
+				if ($operator === '1'){
+					//If the tag names are equal, set the flag to false (0) and end the label check
+					if (isset($triggerdata[$triggerid]['tags'][$value])){
+						$check_result['flag'][$formulaid] = 0;
+						continue;
+					}
+					else {
+						$check_result['flag'][$formulaid] = 1;
+						continue;
+					}
+				}
+				//Processing when contains
+				if ($operator === '2'){
+					if (isset($triggerdata[$triggerid]['tags'])){
+						//Check for the number of tags
+						foreach($triggerdata[$triggerid]['tags'] as $tag_key => $tag_value){
+							//If the tag name contains a value, set the flag to true (1) and end the label check.
+							if (strpos($tag_key, $value) !== false){
+								$check_result['flag'][$formulaid] = 1;
+								continue 2;
+							}
+						}
+					}
+					//If the tag does not exist or is not included, set the flag to false (0) and end the label check
+					$check_result['flag'][$formulaid] = 0;
+					continue;
+				}
+				//Processing when not contains
+				if ($operator === '3'){
+					if (isset($triggerdata[$triggerid]['tags'])){
+						//Check for the number of tags
+						foreach($triggerdata[$triggerid]['tags'] as $tag_key => $tag_value){
+							//If the tag name contains a value, set the flag to false (0) and end the label check
+							if (strpos($tag_key, $value) !== false){
+								$check_result['flag'][$formulaid] = 0;
+								continue 2;
+							}
+						}
+					}
+					//If the tag does not exist or is not included, set the flag to true (1) and end the label check
+					$check_result['flag'][$formulaid] = 1;
+					continue;
+				}
+			}
+			//Tag value
+			if ($conditiontype === '26'){
+				//Processing when equals
+				if ($operator === '0'){
+					//Check the value of the tag if the tag names are equal
+					if (isset($triggerdata[$triggerid]['tags'][$value2])){
+						//Check for the number of tag values and if they are equal, set the flag to true (1) and end the label check.
+						$count_tagvalue = count($triggerdata[$triggerid]['tags'][$value2]);
+						for ($k = 0; $k < $count_tagvalue; ++$k){
+							if ($triggerdata[$triggerid]['tags'][$value2][$k] === $value){
+								$check_result['flag'][$formulaid] = 1;
+								continue 2;
+							}
+						}
+						//If the tag values are not equal, set the flag to false (0) and end the label check
+						$check_result['flag'][$formulaid] = 0;
+						continue;
+					}
+					//If the tag names are not equal, set the flag to false (0) and end the label check
+					else {
+						$check_result['flag'][$formulaid] = 0;
+						continue;
+					}
+				}
+				//Processing when not equals
+				if ($operator === '1'){
+					//Check the value of the tag if the tag names are equal
+					if (isset($triggerdata[$triggerid]['tags'][$value2])){
+						//Check for the number of tag values and if they are equal, set the flag to false (0) and end the label check.
+						$count_tagvalue = count($triggerdata[$triggerid]['tags'][$value2]);
+						for ($k = 0; $k < $count_tagvalue; ++$k){
+							if ($triggerdata[$triggerid]['tags'][$value2][$k] === $value){
+								$check_result['flag'][$formulaid] = 0;
+								continue 2;
+							}
+						}
+						//If the tag values are not equal, set the flag to true (1) and end the label check
+						$check_result['flag'][$formulaid] = 1;
+						continue;
+					}
+					//If the tag names are not equal, set the flag to true (1) and end the label check.
+					else {
+						$check_result['flag'][$formulaid] = 1;
+						continue;
+					}
+				}
+				//Processing when contains
+				if ($operator === '2'){
+					//Check the value of the tag if the tag names are equal
+					if (isset($triggerdata[$triggerid]['tags'][$value2])){
+						//Check for the number of tag values, and if the tag value is included, set the flag to true (1) and end the label check
+						$count_tagvalue = count($triggerdata[$triggerid]['tags'][$value2]);
+						for ($k = 0; $k < $count_tagvalue; ++$k){
+							if (strpos($triggerdata[$triggerid]['tags'][$value2][$k], $value) !== false){
+								$check_result['flag'][$formulaid] = 1;
+								continue 2;
+							}
+						}
+						//If the tag value is not included, set the flag to false (0) and end the label check
+						$check_result['flag'][$formulaid] = 0;
+						continue;
+					}
+					//If the tag names are not equal, set the flag to false (0) and end the label check
+					else {
+						$check_result['flag'][$formulaid] = 0;
+						continue;
+					}
+				}
+				//Processing when not contains
+				if ($operator === '3'){
+					//Check the value of the tag if the tag names are equal
+					if (isset($triggerdata[$triggerid]['tags'][$value2])){
+						//Check for the number of tag values, and if the tag value is included, set the flag to false (0) and end the label check
+						$count_tagvalue = count($triggerdata[$triggerid]['tags'][$value2]);
+						for ($k = 0; $k < $count_tagvalue; ++$k){
+							if (strpos($triggerdata[$triggerid]['tags'][$value2][$k], $value) !== false){
+								$check_result['flag'][$formulaid] = 0;
+								continue 2;
+							}
+						}
+						//If the tag value is not included, set the flag to true (1) and end the label check
+						$check_result['flag'][$formulaid] = 1;
+						continue;
+					}
+					//If the tag names are not equal, set the flag to true (1) and end the label check
+					else {
+						$check_result['flag'][$formulaid] = 1;
+						continue;
+					}
+				}
+			}
+		}
+		//Check formula AND/OR
+		if ($evaltype === '0'){
+			//Check by type
+			foreach($check_result['conditiontype'] as $key => $value){
+				$condition_result = 0;
+				$count_formula = count($value);
+				//Check for the number of type flags
+				for ($j = 0; $j < $count_formula; ++$j){
+					$check_formulaid = $value[$j];
+					//If even one true (1) exists, the check result is set to true (1)
+					if ($check_result['flag'][$check_formulaid] == 1){
+						$condition_result = 1;
+						continue;
+					}
+				}
+				//Store the result in a conditional expression check array
+				if ($condition_result == 1){
+					$final_result[] = 1;
+				}
+				else {
+					$final_result[] = 0;
+				}
+			}
+			$final_check = 0;
+			$count_final = count($final_result);
+			//Check the check result and if all are true (1), store the action name
+			for ($j = 0; $j < $count_final; ++$j){
+				$final_check = $final_check + $final_result[$j];
+			}
+			if ($final_check == $count_final){
+				$action_name[] = $name;
+			}
+		}
+		//Check formula AND
+		if ($evaltype === '1'){
+			//Check by type
+			foreach($check_result['conditiontype'] as $key => $value){
+				$condition_result = 1;
+				$count_formula = count($value);
+				//Check for the number of type flags
+				for ($j = 0; $j < $count_formula; ++$j){
+					$check_formulaid = $value[$j];
+					//If even one false (0) exists, the check result is set to false (0) and the check ends
+					if ($check_result['flag'][$check_formulaid] != 1){
+						$condition_result = 0;
+						continue 3;
+					}
+				}
+			}
+			//If the check result is not false (0), store the action name
+			if ($condition_result != 0){
+				$action_name[] = $name;
+			}
+		}
+		//Check formula OR
+		if ($evaltype === '2'){
+			//Check by type
+			foreach($check_result['conditiontype'] as $key => $value){
+				$count_formula = count($value);
+				//Check for the number of type flags
+				for ($j = 0; $j < $count_formula; ++$j){
+					$check_formulaid = $value[$j];
+					//If even one true (1) exists, store the action name
+					if ($check_result['flag'][$check_formulaid] == 1){
+						$action_name[] = $name;
+						continue 3;
+					}
+				}
+			}
+		}
+		//Check formula custom expression
+		if ($evaltype === '3'){
+			//Replace custom conditional expression with check result for each flag
+			foreach($check_result['flag'] as $key => $value){
+				$replace = "$1[$value]$2";
+				$eval_formula = preg_replace("/(^|[^A-Z])$key([^A-Z]|$)/", $replace, $eval_formula);
+			}
+			$eval_formula = str_replace(array("[" ,"]"), "", $eval_formula);
+			
+			//If the result of the custom conditional expression matches the conditional expression of true (1), store the action name
+			if (in_array($eval_formula, $match_expression, true)){
+				$action_name[] = $name;
+			}
+			//If they do not match, a custom conditional expression is determined
+			else {
+				$check_result = custom_expression_result($eval_formula, $triggerid);
+				
+				//If the judgment of the custom conditional expression is true (1), the action name is stored.
+				if ($check_result){
+					$match_expression[] = $eval_formula;
+					$action_name[] = $name;
+				}
+			}
+		}
+	}
+	return $action_name;
+}
+
+//Check custom expression
+function custom_expression_result($eval_formula, $triggerid){
+	global $tmpfile;
+	
+	$php = '<?php
+		function triggerid_check(){
+			$check_result = (expression);
+			return $check_result;
+		}
+	?>';
+	$php = str_replace('triggerid', "triggerid_$triggerid", $php);
+	$php = str_replace('expression', $eval_formula, $php);
+
+	file_put_contents($tmpfile, $php);
+	
+	require $tmpfile;
+	$func_name = "triggerid_" . "$triggerid" . "_check";
+	$check_result = $func_name();
+
+	return $check_result;
+}
+
+////////////////////////////////////////////////////////////////////////////////
+//	Directory Function
+////////////////////////////////////////////////////////////////////////////////
+//Delete temporary directory
+function rm_dir($dir){
+	//Get to be deleted
+	$files = array_diff(scandir($dir), array('.', '..'));
+	
+	//Delete targets in order
+	foreach ($files as $fname){
+		if (is_dir($dir . '/' . $fname)) {
+			rm_dir($dir . '/' . $fname);
+		}
+		else {
+			unlink($dir . '/' . $fname);
+		}
+	}
+	rmdir($dir);
+}
+
+
+////////////////////////////////////////////////////////////////////////////////
+//	Common Function
+////////////////////////////////////////////////////////////////////////////////
+//Explode multi delimiters
+function multiexplode($delimiters, $string){
+	$import = str_replace($delimiters, $delimiters[0], $string);
+	$export = explode($delimiters[0], $import);
+	return  $export;
+}
+
+////////////////////////////////////////////////////////////////////////////////
+//	API Function
+////////////////////////////////////////////////////////////////////////////////
+//Curl setup
+function curl_setup($api_url) {
+	$ch = curl_init();
+		curl_setopt($ch, CURLOPT_HTTPHEADER, array('Content-Type: application/json'));
+			curl_setopt($ch, CURLOPT_CUSTOMREQUEST, 'POST');
+			curl_setopt($ch, CURLOPT_RETURNTRANSFER, true);
+			curl_setopt($ch, CURLOPT_SSL_VERIFYPEER, false);
+			curl_setopt($ch, CURLOPT_SSL_VERIFYHOST, false);
+			curl_setopt($ch, CURLOPT_URL,$api_url);
+	return $ch;
+}
+//API login
+function api_login($api_user, $api_pass) {
+	$params = array(
+		'user' => $api_user,
+		'password' => $api_pass
+	);
+	$auth = null;
+	$response = api_request('user.login', $params, $auth);
+	return $response;
+}
+//API logout
+function api_logout($auth) {
+	$response = api_request('user.logout', [], $auth);
+	return $response;
+}
+//API request
+function api_request($method, $params, $auth) {
+	global $ch;
+	
+	$id = date('YmdHis');
+	
+	//Request Data
+	$request = array(
+		'jsonrpc' => '2.0',
+		'method' => $method,
+		'params' => $params,
+		'id' => $id,
+		'auth' => $auth
+	);
+	//JSON Encode
+	$request_json = json_encode($request);
+	
+	//Curl Setup
+	curl_setopt($ch, CURLOPT_POSTFIELDS, $request_json);
+	
+	//Curl Execute
+	$response_json = curl_exec($ch);
+	
+	//JSON Decode
+	$response = json_decode($response_json, true);
+	
+	//Return result
+	if (isset($response['result'])) {
+		return $response['result'];
+	}
+	elseif (isset($response['error'])) {
+		$error_message = error_message($response);
+		echo $error_message . "\n";
+		exit(1);
+	}
+	else {
+		echo "[ERROR] An unexpected error has occurred." . "\n";
+		echo "Return Data: " . "\n" . "[$response]" . "\n";
+		exit(1);
+	}
+}
+//Handling error messages
+function error_message($response) {
+	$error_message = "[ERROR] "
+		. "code:\"" . $response['error']['code'] . "\", "
+		. "message:\"" . $response['error']['message'] . "\", "
+		. "data:\"" . $response['error']['data'] . "\"";
+	return $error_message;
+}
+
+?>
