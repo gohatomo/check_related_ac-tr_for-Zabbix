@@ -16,7 +16,6 @@ $auth = api_login($api_user, $api_pass);
 //File definition
 $hiduke = date("Ymd");
 $zikan = date("His");
-$hostname = gethostname();
 
 //Temporary directory specification
 $tmpdir = "{$tmp_dir}/{$hiduke}_{$zikan}";
@@ -26,8 +25,8 @@ $tmpfile = "{$tmpdir}/tmpfile.php";
 if (!file_exists($export_dir)){
 	mkdir($export_dir, 0755);
 }
-$CSVFILE = "{$export_dir}/{$hostname}_actiontrigger_{$hiduke}_{$zikan}.csv";
-$f = fopen("$CSVFILE", "w");
+$csv_file = "{$export_dir}/related_ac-tr_{$hiduke}_{$zikan}.csv";
+$f = fopen("$csv_file", "w");
 
 //Insert header in output file
 $header = array(
@@ -162,14 +161,14 @@ if (file_exists($tmpdir)){
 }
 
 //Define zip file name
-$z_file = "{$export_dir}/{$hostname}_actiontrigger_{$hiduke}_{$zikan}.zip";
+$z_file = "{$export_dir}/related_ac-tr_{$hiduke}_{$zikan}.zip";
 
 //Open zip file
 $zip = new ZipArchive();
 $zip->open("{$z_file}", ZipArchive::CREATE);
 
 //Add file
-$zip->addFile($CSVFILE, mb_substr(mb_strrchr("/$CSVFILE", '/', false, "$encoding"), 1, NULL, "$encoding"));
+$zip->addFile($csv_file, mb_substr(mb_strrchr("/$csv_file", '/', false, "$encoding"), 1, NULL, "$encoding"));
 
 //Close zip file
 $zip->close();
@@ -179,7 +178,7 @@ echo "[Export File Path]" . "\n";
 echo realpath($z_file) . "\n";
 
 //Delete csv file
-unlink($CSVFILE);
+unlink($csv_file);
 
 
 ////////////////////////////////////////////////////////////////////////////////
