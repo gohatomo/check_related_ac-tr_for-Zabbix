@@ -50,6 +50,7 @@ $actiondata = actiondata_get();
 $count_action = count($actiondata);
 $hostgroupdata = hostgroup_get();
 $match_expression = array();
+$count_custom_expression = 0;
 
 //Read list file
 $list_file = "hostid_list.csv";
@@ -271,6 +272,9 @@ function triggerdata_get($triggerid){
 		'selectHosts' => array(
 			'hostid'
 		),
+		'selectItems' => array(
+			'itemid'
+		),
 		'expandDescription' => true,
 	);
 	$response = api_request($method, $params, $auth);
@@ -310,6 +314,31 @@ function triggerdata_get($triggerid){
 			$h_tag_value = $response2[0]['tags'][$j]['value'];
 			
 			$triggerdata[$triggerid]['tags'][$h_tag][] = $h_tag_value;
+		}
+	}
+	//Store item tag data in an array
+	$count_i = count($response[0]['items']);
+	for ($i = 0; $i < $count_i; ++$i){
+		$itemid = $response[0]['items'][$i]['itemid'];
+		$triggerdata[$triggerid]['itemid'][] = $itemid;
+		
+		//Get item data
+		$method = 'item.get';
+		$params = array(
+			'itemids' => $itemid,
+			'output' => array(
+				'itemid',
+			),
+			'selectTags' => 'extend',
+		);
+		$response2 = api_request($method, $params, $auth);
+		
+		$count_i2 = count($response2[0]['tags']);
+		for ($j = 0; $j < $count_i2; ++$j){
+			$i_tag = $response2[0]['tags'][$j]['tag'];
+			$i_tag_value = $response2[0]['tags'][$j]['value'];
+			
+			$triggerdata[$triggerid]['tags'][$i_tag][] = $i_tag_value;
 		}
 	}
 	//Store link template tag data in an array
@@ -1028,7 +1057,7 @@ function action_check($hostid, $hostgroups, $triggerid){
 			}
 			//If they do not match, a custom conditional expression is determined
 			else {
-				$check_result = custom_expression_result($eval_formula, $triggerid);
+				$check_result = custom_expression_result($eval_formula);
 				
 				//If the judgment of the custom conditional expression is true (1), the action name is stored.
 				if ($check_result){
@@ -1042,8 +1071,9 @@ function action_check($hostid, $hostgroups, $triggerid){
 }
 
 //Check custom expression
-function custom_expression_result($eval_formula, $triggerid){
+function custom_expression_result($eval_formula){
 	global $tmpfile;
+	global $count_custom_expression;
 	
 	$php = '<?php
 		function triggerid_check(){
@@ -1051,15 +1081,16 @@ function custom_expression_result($eval_formula, $triggerid){
 			return $check_result;
 		}
 	?>';
-	$php = str_replace('triggerid', "triggerid_$triggerid", $php);
+	$php = str_replace('triggerid_check', "triggerid_check_$count_custom_expression", $php);
 	$php = str_replace('expression', $eval_formula, $php);
 
 	file_put_contents($tmpfile, $php);
 	
 	require $tmpfile;
-	$func_name = "triggerid_" . "$triggerid" . "_check";
+	$func_name = "triggerid_check_" . "$count_custom_expression";
 	$check_result = $func_name();
 
+	++$count_custom_expression;
 	return $check_result;
 }
 
