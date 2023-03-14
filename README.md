@@ -1,4 +1,4 @@
-# check_related_ac-tr
+# check_related_ac-tr for Zabbix
 
 ## Description
 This is a script that outputs a list of actions associated with the trigger for Zabbix 6.0.
